@@ -1,0 +1,24 @@
+# Dockerfile for LiveKit SFU (AWS EC2)
+# Usage: docker build -t nexmeet-livekit -f Dockerfile.livekit . && docker run -d -p 7880:7880 -p 7881:7881 -p 50000-60000:50000-60000/udp --name livekit nexmeet-livekit
+
+FROM alpine:3.19
+
+# Install LiveKit server binary
+RUN apk add --no-cache curl ca-certificates && \
+    curl -L -o livekit-server https://github.com/livekit/livekit-server/releases/latest/download/livekit-server_linux_amd64 && \
+    chmod +x livekit-server && \
+    mv livekit-server /usr/local/bin/livekit-server
+
+# Expose LiveKit ports
+EXPOSE 7880/tcp 7881/tcp 50000-60000/udp
+
+# Create working directory and copy config
+WORKDIR /app
+COPY livekit.yaml .
+
+# Environment variables (override at runtime or Docker Compose)
+ENV LIVEKIT_API_KEY=devkey \
+    LIVEKIT_API_SECRET=secret
+
+# Run LiveKit server
+CMD ["livekit-server", "--config=/app/livekit.yaml"]

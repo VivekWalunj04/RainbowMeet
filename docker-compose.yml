@@ -1,0 +1,138 @@
+services:
+  # =====================================================================
+  # LiveKit SFU — media forwarding + WebRTC signaling
+  # Credentials flow in via LIVEKIT_KEYS ("key: secret" format) so .env
+  # stays the single source of truth for the keypair.
+  # =====================================================================
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: livekit
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
+    environment:
+      - "LIVEKIT_KEYS=${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+      - LIVEKIT_WS_URL=${LIVEKIT_WS_URL}
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    command: ["--config=/etc/livekit.yaml"]
+    restart: unless-stopped
+    networks:
+      - NexMeet
+
+  # =====================================================================
+  # Coturn TURN server (NAT traversal fallback)
+  # static-auth-secret lives in turnserver.conf and must match TURN_SECRET.
+  # =====================================================================
+  coturn:
+    image: coturn/coturn:latest
+    container_name: coturn
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "5349:5349"
+      - "5349:5349/udp"
+    volumes:
+      - ./turnserver.conf:/etc/coturn/coturn.conf:ro
+    restart: unless-stopped
+    networks:
+      - NexMeet
+
+  # =====================================================================
+  # Redis (Socket.IO adapter) — internal network only, not exposed
+  # =====================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    command: redis-server --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - NexMeet
+
+  # =====================================================================
+  # PostgreSQL — internal network only, not exposed
+  # =====================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      - POSTGRES_DB=nexmeet
+      - POSTGRES_USER=nexmeet
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U NexMeet -d NexMeet"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - NexMeet
+
+  # =====================================================================
+  # Backend — REST + Socket.IO. Reachable only via nginx proxy.
+  # =====================================================================
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: backend
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - CLIENT_URL=${CLIENT_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - LIVEKIT_WS_URL=${LIVEKIT_WS_URL}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - NexMeet
+
+  # =====================================================================
+  # Frontend — nginx serving the SPA + reverse proxy.
+  # TLS is enabled automatically when ./certs contains fullchain.pem
+  # and privkey.pem (self-signed pair ships for local testing).
+  # =====================================================================
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./client/nginx.conf:/etc/nexmeet/nginx.http.conf:ro
+      - ./client/nginx.ssl.conf:/etc/nexmeet/nginx.ssl.conf:ro
+      - ./docker/select-nginx-conf.sh:/docker-entrypoint.d/40-select-conf.sh:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - backend
+      - livekit
+    restart: unless-stopped
+    networks:
+      - NexMeet
+
+volumes:
+  postgres_data:
+
+networks:
+  NexMeet:
+    driver: bridge

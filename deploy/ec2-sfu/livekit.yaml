@@ -1,0 +1,16 @@
+# LiveKit SFU config — cloud VM edition.
+#
+# Credentials are injected via LIVEKIT_KEYS from .env (docker-compose).
+log_level: info
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  # Must match the UDP range published in docker-compose.yml AND opened in
+  # the EC2 security group.
+  port_range_start: 50000
+  port_range_end: 50100
+  # REQUIRED on EC2: announces the instance's public IP to clients instead
+  # of the container-internal address. LiveKit discovers it automatically
+  # on AWS via the metadata service / STUN.
+  use_external_ip: true

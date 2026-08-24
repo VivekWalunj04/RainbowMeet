@@ -1,0 +1,44 @@
+# ══════════════════════════════════════════════════════════════
+# NexMeet — self-hosted LiveKit SFU for AWS EC2
+#
+#   livekit : media forwarding + WebRTC signaling (7880/7881, UDP 50000-50100)
+#   caddy   : automatic TLS (Let's Encrypt) → wss://$SFU_DOMAIN
+#
+# Run:  cp .env.example .env && nano .env
+#       docker compose up -d
+# ══════════════════════════════════════════════════════════════
+
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: livekit
+    environment:
+      - "LIVEKIT_KEYS=${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    command: ["--config=/etc/livekit.yaml"]
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    depends_on:
+      - livekit
+    environment:
+      - SFU_DOMAIN=${SFU_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"    # ACME HTTP-01 challenge + redirect
+      - "443:443"
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

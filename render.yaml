@@ -1,0 +1,43 @@
+# Render Blueprint — NexMeet backend.
+# Deploy via "New +" → "Blueprint" after pointing Render at this repo,
+# or use as a reference for manual service setup.
+#
+# Fill the `sync: false` values in the Render dashboard after import:
+#   CLIENT_URL        → https://<your-vercel-app>.vercel.app (+ custom domains, comma-separated)
+#   LIVEKIT_API_KEY   → same keypair as deploy/ec2-sfu/.env
+#   LIVEKIT_API_SECRET→ same secret
+#   LIVEKIT_WS_URL    → wss://<SFU_DOMAIN> (the Caddy-fronted EC2 domain)
+#   DATABASE_URL      → Neon pooled connection string (?sslmode=require)
+#   REDIS_URL         → Upstash TLS connection string (rediss://...)
+
+services:
+  - type: web
+    name: nexmeet-server
+    runtime: docker
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    healthCheckPath: /api/health
+    # WebSocket support requires at least the Starter plan (free tier works
+    # but sleeps after 15 min idle, dropping all live meetings).
+    plan: starter
+    region: oregon # pick the region nearest your EC2 SFU
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: CLIENT_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: LIVEKIT_WS_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false

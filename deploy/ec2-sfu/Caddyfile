@@ -1,0 +1,5 @@
+# Terminates TLS for the LiveKit signaling WebSocket.
+# Certificates are issued and renewed automatically by Caddy (Let's Encrypt).
+{$SFU_DOMAIN} {
+	reverse_proxy livekit:7880
+}

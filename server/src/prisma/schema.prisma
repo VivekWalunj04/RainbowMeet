@@ -1,0 +1,37 @@
+// NexMeet data model — PostgreSQL via Prisma ORM
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserKind {
+  guest
+  user
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String?   @unique
+  name         String
+  passwordHash String?
+  kind         UserKind  @default(guest)
+  createdAt    DateTime  @default(now())
+  roomsCreated Room[]
+}
+
+model Room {
+  id          String    @id @default(cuid())
+  slug        String    @unique
+  name        String
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  createdById String?
+  createdBy   User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([slug])
+}

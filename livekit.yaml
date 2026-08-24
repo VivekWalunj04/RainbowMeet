@@ -1,0 +1,16 @@
+# LiveKit SFU config.
+#
+# Credentials are injected at runtime by docker-compose.yml via:
+#   LIVEKIT_KEYS=${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
+# (livekit-server ignores the individual KEY/SECRET env vars, so do not
+#  re-add a `keys:` block here unless you drop it from compose too.)
+log_level: info
+port: 7880
+rtc:
+  tcp_port: 7881
+  # Must match the UDP range published in docker-compose.yml
+  port_range_start: 50000
+  port_range_end: 50100
+  # On a public cloud VM set this to true so LiveKit announces its public IP
+  # to clients instead of the container-internal one:
+  use_external_ip: false
