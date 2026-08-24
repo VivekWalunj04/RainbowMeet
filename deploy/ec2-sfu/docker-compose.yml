@@ -22,6 +22,11 @@ services:
       - "7881:7881"
       - "50000-50100:50000-50100/udp"
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   caddy:
     image: caddy:2-alpine
@@ -38,6 +43,11 @@ services:
       - "80:80"    # ACME HTTP-01 challenge + redirect
       - "443:443"
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   caddy_data:

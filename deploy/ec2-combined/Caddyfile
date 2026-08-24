@@ -1,0 +1,14 @@
+# Dual-domain Caddy configuration for single-EC2 deployment
+
+{$API_DOMAIN} {
+	reverse_proxy backend:3000 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
+
+{$SFU_DOMAIN} {
+	reverse_proxy livekit:7880
+}

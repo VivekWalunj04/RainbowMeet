@@ -39,6 +39,7 @@ export interface Database {
   createRoom(input: { slug: string; name: string; createdById?: string | null }): Promise<StoredRoom>;
   findRoomBySlug(slug: string): Promise<StoredRoom | null>;
   listRooms(): Promise<StoredRoom[]>;
+  closeDatabase(): Promise<void>;
 }
 
 /* ── PostgreSQL (Prisma) ─────────────────────────────────────────────── */
@@ -85,6 +86,10 @@ class PrismaDatabase implements Database {
 
   async listRooms(): Promise<StoredRoom[]> {
     return this.prisma.room.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
+  }
+
+  async closeDatabase(): Promise<void> {
+    await this.prisma.$disconnect();
   }
 }
 
@@ -133,6 +138,10 @@ class InMemoryDatabase implements Database {
 
   async listRooms(): Promise<StoredRoom[]> {
     return [...this.rooms.values()].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  async closeDatabase(): Promise<void> {
+    // No-op for in-memory store
   }
 }
 

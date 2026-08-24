@@ -1,0 +1,74 @@
+# ══════════════════════════════════════════════════════════════
+# NexMeet — All-in-One Single EC2 Deployment (Backend + LiveKit SFU)
+#
+#   backend : Express API + Socket.IO (Port 3000)
+#   livekit : WebRTC SFU (Port 7880/7881, UDP 50000-50100)
+#   caddy   : Dual TLS proxy (https://$API_DOMAIN & wss://$SFU_DOMAIN)
+#
+# External Managed Infrastructure:
+#   - Neon PostgreSQL (DATABASE_URL)
+#   - Upstash Redis   (REDIS_URL)
+#   - Vercel Frontend (CLIENT_URL)
+# ══════════════════════════════════════════════════════════════
+
+services:
+  backend:
+    build:
+      context: ../../server
+      dockerfile: Dockerfile
+    container_name: nexmeet-backend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - CLIENT_URL=${CLIENT_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - LIVEKIT_WS_URL=wss://${SFU_DOMAIN}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: nexmeet-livekit
+    restart: unless-stopped
+    environment:
+      - "LIVEKIT_KEYS=${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ../ec2-sfu/livekit.yaml:/etc/livekit.yaml:ro
+    command: ["--config=/etc/livekit.yaml"]
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: nexmeet-caddy
+    depends_on:
+      backend:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - API_DOMAIN=${API_DOMAIN}
+      - SFU_DOMAIN=${SFU_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

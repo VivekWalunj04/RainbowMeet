@@ -7,6 +7,8 @@ import { assertProductionSecrets, config } from './config';
 import { setupRedisAdapter } from './config/redis';
 import { setupSockets } from './sockets';
 
+import { db } from './services/db.service';
+
 async function main(): Promise<void> {
   assertProductionSecrets();
 
@@ -40,15 +42,16 @@ async function main(): Promise<void> {
 `);
   });
 
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     // eslint-disable-next-line no-console
     console.log(`\n[server] ${signal} received, shutting down…`);
     io.close();
+    await db.closeDatabase().catch(() => null);
     httpServer.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 5000).unref();
   };
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => { void shutdown('SIGINT'); });
+  process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 }
 
 main().catch((err) => {

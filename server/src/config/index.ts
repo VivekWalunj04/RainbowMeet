@@ -43,9 +43,12 @@ export function assertProductionSecrets(): void {
   if (config.env !== 'production') return;
   const weak: string[] = [];
   if (config.jwtSecret.includes('change-me') || config.jwtSecret.includes('dev-only')) weak.push('JWT_SECRET');
-  if (config.livekit.apiSecret === 'secret') weak.push('LIVEKIT_API_SECRET');
+  if (config.livekit.apiSecret === 'secret' || config.livekit.apiKey === 'devkey') weak.push('LIVEKIT_API_KEY/SECRET');
+  if (!config.databaseUrl) weak.push('DATABASE_URL (PostgreSQL / Neon)');
+  if (!config.redisUrl) weak.push('REDIS_URL (Upstash / Redis)');
+
   if (weak.length) {
     // eslint-disable-next-line no-console
-    console.warn(`[config] WARNING: weak/default secrets in production: ${weak.join(', ')}`);
+    console.warn(`[config] WARNING: Missing or default production configuration: ${weak.join(', ')}`);
   }
 }

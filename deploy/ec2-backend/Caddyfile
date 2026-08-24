@@ -1,0 +1,11 @@
+# Terminates TLS for the NexMeet Backend API and Socket.IO WebSockets.
+# Certificates are issued and renewed automatically by Caddy via Let's Encrypt.
+
+{$API_DOMAIN} {
+	reverse_proxy backend:3000 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

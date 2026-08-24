@@ -1,155 +1,201 @@
-# NexMeet — Cloud Deployment Guide
+# NexMeet — Production Deployment Guide
 
-Split-origin production architecture:
+Production architecture topology:
 
 ```
- Vercel (SPA)          Render/AWS (API + Socket.IO)      EC2 (SFU)
-┌──────────────┐  HTTPS REST   ┌──────────────────┐  wss   ┌─────────────────┐
-│ NexMeet-    │ ────────────▶ │ NexMeet-server  │ ─────▶ │ livekit + caddy │
-│ client       │  wss socket   │ (Docker)         │        │ (auto-TLS)      │
-└──────────────┘               └────────┬─────────┘        └─────────────────┘
-                                        │                        ▲
-                              ┌─────────┴────────┐    UDP media │
-                              ▼                  ▼              │
-                        Neon Postgres      Upstash Redis   browsers
+ Vercel (Frontend SPA)     AWS EC2 (API + Socket.IO)         AWS EC2 (LiveKit SFU)
+┌────────────────────┐   HTTPS REST  ┌──────────────────┐  wss   ┌─────────────────┐
+│ nexmeet.vercel.app │ ────────────▶ │ api.yourdomain   │ ─────▶ │ sfu.yourdomain  │
+│ (Vite React)       │   wss socket  │ (Express+Caddy)  │        │ (LiveKit+Caddy) │
+└────────────────────┘               └────────┬─────────┘        └─────────────────┘
+                                              │                        ▲
+                                    ┌─────────┴────────┐    UDP media │
+                                    ▼                  ▼              │
+                              Neon Postgres      Upstash Redis   browsers
+                              (Database)         (PubSub/Adapter)
 ```
 
-Browsers connect **directly** to each service (no same-origin proxy exists on
-Vercel) — every URL below is a real public origin with TLS.
+Browsers connect **directly** to each service:
+- Frontend on **Vercel** (`https://nexmeet.vercel.app`)
+- Backend API & Socket.IO on **AWS EC2** (`https://api.yourdomain.com`)
+- LiveKit WebRTC SFU on **AWS EC2** (`wss://sfu.yourdomain.com`)
+- Managed database on **Neon PostgreSQL**
+- Managed cache & real-time adapter on **Upstash Redis**
 
 ---
 
-## 0. Prerequisites
+## 0. Prerequisites & Domain Options
 
-- A domain you control (e.g. `yourdomain.com`) — needed for the SFU's TLS cert.
-- Accounts: [Vercel](https://vercel.com), [Render](https://render.com),
-  AWS (EC2), [Neon](https://neon.tech), [Upstash](https://upstash.com).
-- Generate the LiveKit keypair once and reuse it in steps 3 & 4:
+### Option A: No Custom Domain (100% Free Wildcard DNS - Recommended if you don't own a domain)
+You do **not** need to buy a domain! You can use free wildcard DNS services like **`nip.io`** or **`sslip.io`**.
+They automatically map domain names back to your EC2 instance's public IP address, allowing Caddy to automatically issue **free Let's Encrypt TLS certificates**:
+
+If your EC2 public IP is `54.210.10.20`:
+- **Backend API Domain:** `api-54-210-10-20.nip.io` ➔ resolves to `54.210.10.20`
+- **LiveKit SFU Domain:** `sfu-54-210-10-20.nip.io` ➔ resolves to `54.210.10.20`
+
+### Option B: Custom Domain
+If you own a domain (e.g. `yourdomain.com`), point DNS A records:
+- `api.yourdomain.com` ➔ Backend EC2 Public IP
+- `sfu.yourdomain.com` ➔ LiveKit SFU EC2 Public IP
+
+### Keypair Generation
+Accounts required: [Vercel](https://vercel.com), AWS (EC2), [Neon](https://neon.tech), and [Upstash](https://upstash.com).
+Generate a secure LiveKit keypair once:
 
 ```bash
 KEY="API$(tr -dc A-Za-z0-9 </dev/urandom | head -c16)"
 SECRET="$(openssl rand -hex 32)"
-echo "$KEY / $SECRET"
+echo "LIVEKIT_API_KEY=$KEY"
+echo "LIVEKIT_API_SECRET=$SECRET"
 ```
 
-## 1. Neon PostgreSQL
+---
 
-1. Create project `NexMeet` → copy the **pooled** connection string.
-2. Append `?sslmode=require` if not present:
+## 1. Neon PostgreSQL Setup
 
-```
-postgresql://user:pass@ep-xxx-pooler.region.aws.neon.tech/nexmeet?sslmode=require
-```
-
-Tables are created automatically on first backend boot (`prisma migrate deploy`
-runs in the container entrypoint; migrations live in `server/src/prisma/migrations`).
-
-## 2. Upstash Redis
-
-1. Create a Regional (not Global) database → copy the TLS connection string:
+1. Create a project `NexMeet` in [Neon Console](https://console.neon.tech).
+2. Copy the **pooled** connection string.
+3. Ensure `?sslmode=require` is present at the end of the URL:
 
 ```
-rediss://default:<token>@xxx.upstash.io:6379
+postgresql://neondb_owner:password@ep-xxx-pooler.us-east-2.aws.neon.tech/nexmeet?sslmode=require
 ```
 
-Optional for single-instance deploys — the server runs fine without it
-(chat/presence stay in-process), so skip if the adapter gives you trouble.
+Database migrations run automatically when the backend container starts (`prisma migrate deploy`).
 
-## 3. LiveKit SFU on EC2
+---
 
-**Instance:** Ubuntu 22.04+, t3.micro is enough for 4–5 person rooms
-(media relay is the bottleneck — scale to t3.small for multiple rooms).
-Install Docker: `curl -fsSL https://get.docker.com | sh`
+## 2. Upstash Redis Setup
 
-**Security group (inbound):**
+1. Create a Regional Redis database in [Upstash Console](https://console.upstash.com).
+2. Copy the TLS connection string:
 
-| Port | Protocol | Purpose |
-|---|---|---|
-| 22 | TCP | SSH (restrict to your IP) |
-| 80 | TCP | ACME challenge → HTTPS redirect |
-| 443 | TCP | Signaling over wss (Caddy) |
-| 7881 | TCP | ICE/TCP fallback |
-| 50000–50100 | UDP | Media |
+```
+rediss://default:password@xxx.upstash.io:6379
+```
 
-(7880 stays internal — Caddy proxies it.)
+Upstash handles multi-instance Socket.IO fan-out and real-time state synchronization.
 
-**DNS:** A record `sfu.yourdomain.com` → instance public IP.
+---
+
+## 3. LiveKit SFU on AWS EC2
+
+**Instance:** Ubuntu 22.04 LTS (t3.small or t3.medium recommended).
+Install Docker:
+```bash
+curl -fsSL https://get.docker.com | sh
+```
+
+**Security Group (Inbound rules):**
+
+| Port | Protocol | Source | Purpose |
+|---|---|---|---|
+| 22 | TCP | Your IP | SSH |
+| 80 | TCP | 0.0.0.0/0 | ACME HTTP-01 challenge (Let's Encrypt) |
+| 443 | TCP | 0.0.0.0/0 | WebRTC Signaling over WSS (Caddy) |
+| 7881 | TCP | 0.0.0.0/0 | WebRTC TCP fallback |
+| 50000–50100 | UDP | 0.0.0.0/0 | WebRTC Media relay |
 
 **Deploy:**
 
 ```bash
-scp -r deploy/ec2-sfu ubuntu@<ec2-ip>:~/sfu && ssh ubuntu@<ec2-ip>
+scp -r deploy/ec2-sfu ubuntu@<SFU-EC2-IP>:~/sfu
+ssh ubuntu@<SFU-EC2-IP>
 cd ~/sfu
-cp .env.example .env && nano .env     # set SFU_DOMAIN + keypair from step 0
-sudo docker compose up -d
+cp .env.example .env
+nano .env   # Set SFU_DOMAIN=sfu.yourdomain.com and LIVEKIT_API_KEY / SECRET
+sudo docker compose up -d --build
 ```
 
-**Verify:** `curl https://sfu.yourdomain.com` should return LiveKit's response
-within ~30 s (Caddy needs a moment to issue the certificate).
+**Verify:** `curl https://sfu.yourdomain.com` returns LiveKit response after ~20 seconds.
 
-## 4. Backend on Render
+---
 
-Option A — Blueprint: push this repo to GitHub → Render → **New → Blueprint** →
-fill the `sync: false` prompts:
+## 4. Backend API & WebSockets on AWS EC2
 
-| Var | Value |
-|---|---|
-| `CLIENT_URL` | `https://<app>.vercel.app` (add custom domains later, comma-separated) |
-| `LIVEKIT_API_KEY/SECRET` | keypair from step 0 |
-| `LIVEKIT_WS_URL` | `wss://sfu.yourdomain.com` |
-| `DATABASE_URL` | step 1 |
-| `REDIS_URL` | step 2 |
+**Instance:** Ubuntu 22.04 LTS (t3.micro or t3.small).
+Install Docker: `curl -fsSL https://get.docker.com | sh`
 
-Option B — manual Docker web service: root dir `server/`, health check path
-`/api/health`, same env vars. Render runs `prisma migrate deploy` automatically
-via the image entrypoint.
+**Security Group (Inbound rules):**
 
-> Free plan sleeps after 15 min idle and kills live meetings — use Starter
-> ($7/mo) for anything real. WebSocket upgrade requires Starter.
+| Port | Protocol | Source | Purpose |
+|---|---|---|---|
+| 22 | TCP | Your IP | SSH |
+| 80 | TCP | 0.0.0.0/0 | ACME HTTP-01 challenge |
+| 443 | TCP | 0.0.0.0/0 | HTTPS REST API & WSS Socket.IO |
 
-**Verify:** `curl https://nexmeet-server.onrender.com/api/health` → `{"ok":true,...}`
+**Deploy:**
+
+```bash
+# Upload server code and deploy files to EC2
+scp -r server deploy ubuntu@<BACKEND-EC2-IP>:~/nexmeet
+ssh ubuntu@<BACKEND-EC2-IP>
+cd ~/nexmeet/deploy/ec2-backend
+cp .env.example .env
+nano .env   # Configure API_DOMAIN, CLIENT_URL, JWT_SECRET, DATABASE_URL, REDIS_URL, LIVEKIT_*
+sudo docker compose up -d --build
+```
+
+> **Single-EC2 Alternative:** If you prefer running Backend + SFU on 1 EC2 instance to minimize cost, use `deploy/ec2-combined/` instead!
+
+**Verify:** `curl https://api.yourdomain.com/api/health` returns:
+```json
+{"ok":true,"uptime":12.3,"timestamp":1700000000,"storage":"postgres"}
+```
+
+---
 
 ## 5. Frontend on Vercel
 
-1. Vercel → **Add New Project** → import repo.
-2. Framework preset auto-detects Vite; root directory: `client`.
-3. Set environment variables (Production + Preview):
+1. Log into [Vercel](https://vercel.com) -> **Add New Project** -> Import your NexMeet git repository.
+2. Framework Preset: **Vite**. Root Directory: `client`.
+3. Configure Environment Variables under **Project Settings ➔ Environment Variables**:
 
+| Variable | Value |
+|---|---|
+| `VITE_API_URL` | `https://api.yourdomain.com` |
+| `VITE_SOCKET_URL` | `wss://api.yourdomain.com` |
+| `VITE_LIVEKIT_WS_URL` | `wss://sfu.yourdomain.com` |
+
+4. Click **Deploy**. SPA routes (`/room/xxxx`) are handled automatically by `vercel.json`.
+
+---
+
+## 6. Verification & Health Check
+
+Run the automated health check script against your backend server:
+
+```bash
+node scripts/production-check.mjs
 ```
-VITE_API_URL=https://nexmeet-server.onrender.com
-VITE_SOCKET_URL=wss://nexmeet-server.onrender.com
-VITE_LIVEKIT_WS_URL=wss://sfu.yourdomain.com
-```
 
-(These also exist as defaults in `client/vercel.json` — replace the
-placeholder values there if you prefer committing them.)
+### End-to-end Verification Checklist:
+- [ ] `https://nexmeet.vercel.app` loads cleanly without console errors.
+- [ ] `POST /api/auth/guest` generates a valid session JWT.
+- [ ] Room creation and joining issue a short-lived LiveKit token.
+- [ ] Two separate browser windows join the same room and stream video/audio.
+- [ ] In-meeting chat and hand-raise events broadcast in real-time via Socket.IO + Upstash Redis.
+- [ ] `GET https://api.yourdomain.com/api/health` returns `storage: "postgres"`.
 
-4. Deploy. SPA deep links (`/room/xxxx`) work via the rewrite rule.
+---
 
-## 6. End-to-end checklist
+## Cost Snapshot (Approximate Monthly Cost)
 
-- [ ] `https://<app>.vercel.app` loads, guest join works
-- [ ] Two browsers see/hear each other (media flows via EC2 SFU)
-- [ ] Chat + presence work (Socket.IO over wss to Render)
-- [ ] Camera/mic allowed — requires valid TLS everywhere (all three origins are https/wss ✓)
-- [ ] `GET /api/health` returns `storage: "postgres"`
-- [ ] EC2: `sudo docker compose logs caddy` shows successful cert issuance
-
-## Cost snapshot (approx., monthly)
-
-| Piece | Service | Cost |
+| Service | Component | Estimated Cost |
 |---|---|---|
 | Frontend | Vercel Hobby | $0 |
-| Backend | Render Starter | $7 |
-| SFU | EC2 t3.small (+EBS) | ~$15 |
-| DB | Neon free tier | $0 |
-| Cache | Upstash free tier | $0 |
+| Backend | AWS EC2 (t3.micro) | ~$6–$8 |
+| SFU | AWS EC2 (t3.small) | ~$15 |
+| Database | Neon PostgreSQL Free Tier | $0 |
+| Redis | Upstash Redis Free Tier | $0 |
+| **Total** | | **~$21–$23 / month** |
+
+---
 
 ## Troubleshooting
 
-- **`invalid API key`** — keypair mismatch between Render env and EC2 `.env`.
-- **Signal connects, no media** — security group missing UDP 50000–50100, or
-  `use_external_ip: false` in the SFU's `livekit.yaml`.
-- **Mixed-content errors in console** — some `VITE_*` URL still using `http://`/`ws://`.
-- **Chat dead but video works** — `VITE_SOCKET_URL` wrong or Render plan can't
-  upgrade WebSockets.
+- **`invalid API key` on join**: LiveKit API key/secret mismatch between Backend EC2 `.env` and SFU EC2 `.env`.
+- **Connected to room, but black video / no audio**: EC2 Security group is missing UDP 50000–50100, or `use_external_ip: true` is missing in `livekit.yaml`.
+- **Socket.IO connection failed**: Check that `VITE_SOCKET_URL` uses `wss://` (not `ws://`), and verify Caddy container logs (`sudo docker compose logs caddy`).
+- **Prisma migration error**: Verify Neon pooled URL ends with `?sslmode=require`.
