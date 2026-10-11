@@ -20,12 +20,13 @@ ENV NODE_ENV=production
 # Install OpenSSL at runtime too
 RUN apk add --no-cache openssl
 
-# Copy node_modules from build stage (includes generated Prisma engines + CLI
-# used by `prisma migrate deploy` at container start).
+# Copy node_modules from build stage (includes generated Prisma engines).
+# Migrations are applied by the one-shot `migrate` service in
+# docker-compose.yml, not by the API process on every restart.
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package*.json ./
 COPY src/prisma ./src/prisma
 
 EXPOSE 3000
-CMD ["sh", "-c", "npx prisma migrate deploy --schema=src/prisma/schema.prisma && node dist/server.js"]
+CMD ["node", "dist/server.js"]

@@ -1,0 +1,10 @@
+# Build context for the backend image. The repo-root .dockerignore does NOT
+# apply here because docker-compose sets `context: ./server`.
+node_modules
+dist
+*.log
+
+# Server-side secrets must never enter the build context or image layers.
+.env
+.env.*
+!.env.example

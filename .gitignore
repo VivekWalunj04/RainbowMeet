@@ -5,3 +5,11 @@ dist/
 certs/
 coverage/
 .vite/
+
+# Local environment files — these hold real secrets (JWT, SFU, Postgres).
+# Use .env.example as the committed template.
+.env
+.env.local
+server/.env
+client/.env
+client/.cert/

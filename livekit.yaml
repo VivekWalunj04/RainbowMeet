@@ -11,6 +11,13 @@ rtc:
   # Must match the UDP range published in docker-compose.yml
   port_range_start: 50000
   port_range_end: 50100
-  # On a public cloud VM set this to true so LiveKit announces its public IP
-  # to clients instead of the container-internal one:
+  # Set true only when reachable from the public internet. On a LAN,
+  # node_ip below is what matters.
   use_external_ip: false
+
+  # NOTE: node_ip is NOT set here. LiveKit does not expand ${VAR} in this
+  # config file. It is passed as the --node-ip flag in docker-compose.yml
+  # instead, which reads the NODE_IP env var. Leaving it unset makes
+  # LiveKit advertise its container IP (e.g. 172.19.0.5) — unreachable
+  # from a phone on the LAN, which breaks media even while signaling works.
+

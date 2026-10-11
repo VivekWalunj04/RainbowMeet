@@ -14,9 +14,12 @@ services:
     environment:
       - "LIVEKIT_KEYS=${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
       - LIVEKIT_WS_URL=${LIVEKIT_WS_URL}
+      # Consumed by the --node-ip flag below so the SFU advertises an
+      # address other LAN devices can actually reach. Empty = localhost only.
+      - NODE_IP=${LAN_IP:-}
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
-    command: ["--config=/etc/livekit.yaml"]
+    command: ["--config=/etc/livekit.yaml", "--node-ip=${LAN_IP:-}"]
     restart: unless-stopped
     networks:
       - NexMeet
@@ -63,13 +66,20 @@ services:
     image: postgres:15-alpine
     container_name: postgres
     environment:
-      - POSTGRES_DB=nexmeet
-      - POSTGRES_USER=nexmeet
+      - POSTGRES_DB=${POSTGRES_DB:-nexmeet}
+      - POSTGRES_USER=${POSTGRES_USER:-NexMeet}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U NexMeet -d NexMeet"]
+      # NOTE: pg_isready only checks that the port is accepting connections —
+      # it does NOT authenticate, so it reports healthy even when the role in
+      # DATABASE_URL does not exist. A real query is required to catch that.
+      test:
+        [
+          "CMD-SHELL",
+          "psql -v ON_ERROR_STOP=1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -c 'SELECT 1' >/dev/null",
+        ]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -95,13 +105,35 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - LIVEKIT_WS_URL=${LIVEKIT_WS_URL}
       - DATABASE_URL=${DATABASE_URL}
+      - POSTGRES_USER=${POSTGRES_USER:-NexMeet}
+      - POSTGRES_DB=${POSTGRES_DB:-nexmeet}
       - REDIS_URL=${REDIS_URL}
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - NexMeet
+
+  # =====================================================================
+  # Postgres migrations — runs `prisma migrate deploy` once, then exits.
+  # Kept separate from the backend so a failed migration surfaces as its
+  # own failed container instead of a silent crash-looping backend.
+  # =====================================================================
+  migrate:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: migrate
+    command: ["npx", "prisma", "migrate", "deploy", "--schema=src/prisma/schema.prisma"]
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
     networks:
       - NexMeet
 

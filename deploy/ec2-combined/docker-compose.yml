@@ -28,6 +28,9 @@ services:
       - LIVEKIT_WS_URL=wss://${SFU_DOMAIN}
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
       interval: 15s
@@ -68,6 +71,21 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+
+  # =====================================================================
+  # Postgres migrations — runs `prisma migrate deploy` once, then exits.
+  # Kept separate from the backend so a failed migration surfaces as its
+  # own failed container instead of a silent crash-looping backend.
+  # =====================================================================
+  migrate:
+    build:
+      context: ../../server
+      dockerfile: Dockerfile
+    container_name: nexmeet-migrate
+    command: ["npx", "prisma", "migrate", "deploy", "--schema=src/prisma/schema.prisma"]
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+    restart: "no"
 
 volumes:
   caddy_data:

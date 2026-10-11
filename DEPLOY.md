@@ -62,7 +62,7 @@ echo "LIVEKIT_API_SECRET=$SECRET"
 postgresql://neondb_owner:password@ep-xxx-pooler.us-east-2.aws.neon.tech/nexmeet?sslmode=require
 ```
 
-Database migrations run automatically when the backend container starts (`prisma migrate deploy`).
+Migrations run automatically via the one-shot `migrate` service (`npx prisma migrate deploy`) before the backend starts.
 
 ---
 

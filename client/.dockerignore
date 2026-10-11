@@ -1,0 +1,14 @@
+# Build context for the frontend image. The repo-root .dockerignore does NOT
+# apply here because docker-compose sets `context: ./client`.
+node_modules
+dist
+.vite
+*.log
+
+# Local TLS material and env files must never enter the build context.
+# (client/.cert holds a private key; it is unused by the image, which
+#  mounts /certs from the host instead.)
+.cert
+certs
+.env
+.env.*
