@@ -146,6 +146,75 @@ sudo docker compose up -d --build
 
 ---
 
+## 4b. Horizontal Scaling — multiple EC2 backend nodes (distributed)
+
+For a true distributed system, run the backend on **several EC2 instances** behind a
+load balancer. All replicas share one Redis so chat, presence, room state and the
+Lamport logical clock are **global** — a message sent through instance A is instantly
+visible on instance B.
+
+```
+                    Vercel (single SPA)
+                          │ REST + wss
+                          ▼
+        ┌────────── Caddy LB (deploy/ec2-horizontal) ──────────┐
+        │            https://api.yourdomain.com                │
+        ├───────────────┬───────────────┬──────────────────────┤
+        ▼               ▼               ▼                      
+   backend-1       backend-2       backend-3     (one EC2 each,
+        │               │               │         or 3 containers
+        └───────┬───────┴───────┬───────┘         on 1 EC2)
+                ▼               ▼
+          Shared Redis     Neon Postgres         LiveKit SFU (own EC2)
+          (adapter +       (rooms, users)        wss://sfu.yourdomain.com
+           presence +
+           history +
+           Lamport clock)
+```
+
+**Why this works as one system (already implemented server-side):**
+- `server/src/config/redisClient.ts` — one shared Redis client for the Socket.IO
+  adapter and all cross-instance state.
+- `server/src/services/presence.service.ts` — presence in a Redis HASH, so every
+  node reports the same member list.
+- `server/src/services/chat.history.service.ts` — chat history in a Redis LIST and a
+  **Lamport clock** (atomic `INCR`) for a total order across nodes.
+- Clients use **websocket-only** transport, so no sticky sessions are needed at the LB.
+
+**Deploy (one instance running the LB + 3 replicas; scale out by adding EC2s that
+point at the same Redis/Postgres):**
+
+```bash
+scp -r server deploy ubuntu@<BACKEND-EC2-IP>:~/nexmeet
+ssh ubuntu@<BACKEND-EC2-IP>
+cd ~/nexmeet/deploy/ec2-horizontal
+cp .env.example .env
+nano .env   # API_DOMAIN, SFU_DOMAIN, CLIENT_URL, JWT_SECRET, LIVEKIT_*, DATABASE_URL
+sudo docker compose up -d --build
+```
+
+Scale the replica count (or duplicate the stack on more EC2s pointing at the same
+Redis/Postgres):
+
+```bash
+sudo docker compose up -d --build --scale backend-1=2 --scale backend-2=2 --scale backend-3=2
+```
+
+**Local distributed test (no AWS needed).** Verifies cross-instance presence, chat
+fan-out, shared history and Lamport ordering between two isolated replicas:
+
+```bash
+docker compose -f scripts/distributed-test/docker-compose.yml up -d --build
+node scripts/distributed-test/verify-distributed.mjs
+```
+
+Expected: `ALL DISTRIBUTED-CHECKS PASSED`.
+
+> **Redis must be real pub/sub** (self-hosted on EC2, or ElastiCache). A managed
+> REST-only Redis will not carry the Socket.IO adapter.
+
+---
+
 ## 5. Frontend on Vercel
 
 1. Log into [Vercel](https://vercel.com) -> **Add New Project** -> Import your NexMeet git repository.

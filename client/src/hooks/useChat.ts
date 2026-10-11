@@ -36,7 +36,11 @@ export function useChat({ roomSlug, displayName, token, active }: UseChatOptions
 
     const socket = io(SOCKET_URL ?? '/', {
       auth: { token },
-      transports: ['websocket', 'polling'],
+      // Websocket-only: with multiple backend instances behind a load balancer,
+      // polling handshakes can land on different nodes and break the session.
+      // A single WS connection stays pinned to one instance, so no sticky
+      // sessions are required.
+      transports: ['websocket'],
     });
     socketRef.current = socket;
 

@@ -13,3 +13,7 @@ coverage/
 server/.env
 client/.env
 client/.cert/
+
+
+DEPLOY_GUIDE_BEGINNER.md
+Architecture-Diagram.png

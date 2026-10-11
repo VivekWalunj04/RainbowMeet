@@ -1,0 +1,131 @@
+# ══════════════════════════════════════════════════════════════
+# NexMeet — HORIZONTALLY SCALED backend on AWS EC2
+#
+#   caddy     : automatic TLS (Let's Encrypt) + load balancer → https://$API_DOMAIN
+#   backend-* : N identical Express + Socket.IO replicas (default 3)
+#   redis     : shared pub/sub adapter + presence + chat history + Lamport clock
+#   migrate   : one-shot `prisma migrate deploy` before the replicas start
+#
+# The replicas share ONE Redis (internal network) so chat/presence/room state
+# is GLOBAL — a message sent through backend-1 is visible to a client attached
+# to backend-2. LiveKit media runs on a separate SFU EC2 (deploy/ec2-sfu/) and
+# Postgres stays managed (Neon) via DATABASE_URL.
+#
+# Run:  cp .env.example .env && nano .env
+#       docker compose up -d --build          # default 3 replicas
+#       docker compose up -d --build --scale backend-1=3 (or backend-2.. etc)
+#
+# NOTE: websocket-only clients (see client/src/hooks/useChat.ts) mean NO sticky
+# sessions are required at the load balancer.
+# ══════════════════════════════════════════════════════════════
+
+x-backend: &backend
+  build:
+    context: ../../server
+    dockerfile: Dockerfile
+  environment: &backend-env
+    - NODE_ENV=production
+    - PORT=3000
+    - CLIENT_URL=${CLIENT_URL}
+    - JWT_SECRET=${JWT_SECRET}
+    - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+    - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+    - LIVEKIT_WS_URL=wss://${SFU_DOMAIN}
+    - DATABASE_URL=${DATABASE_URL}
+    - REDIS_URL=redis://redis:6379
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+  networks:
+    - nexmeet
+  healthcheck:
+    test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+    interval: 15s
+    timeout: 5s
+    retries: 3
+    start_period: 10s
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+  # ── 3 identical backend replicas (no published ports — LB-only access) ──
+  backend-1:
+    <<: *backend
+  backend-2:
+    <<: *backend
+  backend-3:
+    <<: *backend
+
+  # ── Shared Redis: adapter, presence, history, Lamport clock ──
+  redis:
+    image: redis:7-alpine
+    container_name: nexmeet-redis
+    command: redis-server --appendonly yes
+    networks:
+      - nexmeet
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # ── Postgres migrations — runs once before the replicas start ──
+  migrate:
+    build:
+      context: ../../server
+      dockerfile: Dockerfile
+    container_name: nexmeet-migrate
+    command: ["npx", "prisma", "migrate", "deploy", "--schema=src/prisma/schema.prisma"]
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+    restart: "no"
+    networks:
+      - nexmeet
+
+  # ── TLS + load balancer for the API/Socket layer ──
+  caddy:
+    image: caddy:2-alpine
+    container_name: nexmeet-caddy
+    depends_on:
+      backend-1:
+        condition: service_healthy
+      backend-2:
+        condition: service_healthy
+      backend-3:
+        condition: service_healthy
+    environment:
+      - API_DOMAIN=${API_DOMAIN}
+    ports:
+      - "80:80"    # ACME HTTP-01 challenge + redirect
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+    networks:
+      - nexmeet
+
+volumes:
+  caddy_data:
+  caddy_config:
+  redis_data:
+
+networks:
+  nexmeet:
+    driver: bridge

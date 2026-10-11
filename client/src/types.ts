@@ -30,6 +30,10 @@ export interface ChatMessage {
   text: string;
   timestamp: number;
   system?: boolean;
+  /** Lamport clock value — total order across backend instances. */
+  lamport?: number;
+  /** Backend process that issued the message (tie-break for lamport). */
+  nodeId?: string;
 }
 
 /** Options chosen on the pre-join screen. */

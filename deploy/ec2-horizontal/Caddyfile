@@ -1,0 +1,21 @@
+# NexMeet — API load balancer (Caddy)
+#
+# Round-robins REST + Socket.IO across the three backend replicas.
+# All three upstreams are health-checked against /api/health; a dead replica
+# is removed from the pool automatically.
+
+{$API_DOMAIN} {
+	encode gzip
+
+	reverse_proxy backend-1:3000 backend-2:3000 backend-3:3000 {
+		lb_policy round_robin
+		health_uri /api/health
+		health_interval 10s
+		health_timeout 3s
+
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

@@ -1,0 +1,113 @@
+# ══════════════════════════════════════════════════════════════
+# NexMeet distributed-systems local test rig
+#
+# Two ISOLATED backend replicas (backend-a, backend-b) sharing ONE Redis
+# (adapter + presence + history + Lamport clock) and ONE Postgres. Simulates
+# two separate EC2 instances on a single machine.
+#
+# From the host, socket.io clients attach to backend-a (localhost:3100) and
+# backend-b (localhost:3200); any chat/presence event crossing instances proves
+# the cluster works.
+#
+# Run:  docker compose -f scripts/distributed-test/docker-compose.yml up -d --build
+#       node scripts/distributed-test/verify-distributed.mjs
+# ══════════════════════════════════════════════════════════════
+
+x-backend: &backend
+  build:
+    context: ../../server
+    dockerfile: Dockerfile
+  environment: &backend-env
+    - NODE_ENV=production
+    - JWT_SECRET=distributed-test-jwt-secret-min-32-chars!!
+    - CLIENT_URL=http://localhost:3100,http://localhost:3200
+    - LIVEKIT_API_KEY=devy
+    - LIVEKIT_API_SECRET=dev-secret
+    - LIVEKIT_WS_URL=ws://localhost:7880
+    - DATABASE_URL=postgres://NexMeet:testpass@postgres:5432/nexmeet?sslmode=disable
+    - REDIS_URL=redis://redis:6379
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+  networks:
+    - distributed
+
+services:
+  backend-a:
+    <<: *backend
+    container_name: distributed-backend-a
+    ports:
+      - "3100:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  backend-b:
+    <<: *backend
+    container_name: distributed-backend-b
+    ports:
+      - "3200:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    container_name: distributed-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - distributed
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: distributed-postgres
+    environment:
+      - POSTGRES_DB=nexmeet
+      - POSTGRES_USER=NexMeet
+      - POSTGRES_PASSWORD=testpass
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "psql -v ON_ERROR_STOP=1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -c 'SELECT 1' >/dev/null",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - distributed
+
+  migrate:
+    build:
+      context: ../../server
+      dockerfile: Dockerfile
+    container_name: distributed-migrate
+    command: ["npx", "prisma", "migrate", "deploy", "--schema=src/prisma/schema.prisma"]
+    environment:
+      - DATABASE_URL=postgres://NexMeet:testpass@postgres:5432/nexmeet?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - distributed
+
+networks:
+  distributed:
+    driver: bridge

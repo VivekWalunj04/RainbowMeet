@@ -3,14 +3,12 @@ import type { Server, Socket } from 'socket.io';
 
 import type { ChatMessage } from '../types';
 import * as presence from '../services/presence.service';
+import * as chatHistory from '../services/chat.history.service';
 
 const MAX_MESSAGE_LENGTH = 1000;
-const HISTORY_LIMIT = 200;
 
-// Per-room recent history (in-memory ring; swap for Postgres persistence later)
-const histories = new Map<string, ChatMessage[]>();
-
-// Simple sliding-window rate limiter: max 6 messages / 3s per socket
+// Simple sliding-window rate limiter: max 6 messages / 3s per socket.
+// Per-instance by design — it bounds a single connection, not aggregate load.
 const RATE_WINDOW_MS = 3000;
 const RATE_MAX = 6;
 const sendLog = new Map<string, number[]>();
@@ -24,19 +22,12 @@ function isRateLimited(socketId: string): boolean {
   return false;
 }
 
-function pushHistory(msg: ChatMessage): void {
-  const list = histories.get(msg.roomSlug) ?? [];
-  list.push(msg);
-  if (list.length > HISTORY_LIMIT) list.splice(0, list.length - HISTORY_LIMIT);
-  histories.set(msg.roomSlug, list);
-}
-
 export function registerChatHandlers(io: Server, socket: Socket): void {
   /**
    * Join a chat room channel. The socket only receives events for rooms it
    * explicitly joins. Mirrors the LiveKit room slug 1:1.
    */
-  socket.on('room:join', (payload: { roomSlug?: string; displayName?: string }) => {
+  socket.on('room:join', async (payload: { roomSlug?: string; displayName?: string }) => {
     const roomSlug = String(payload?.roomSlug ?? '').trim();
     const displayName = String(payload?.displayName ?? socket.data.user?.name ?? 'Guest').trim().slice(0, 64);
     if (!roomSlug || roomSlug.length > 80) return;
@@ -45,7 +36,7 @@ export function registerChatHandlers(io: Server, socket: Socket): void {
     socket.data.roomSlug = roomSlug;
     socket.data.displayName = displayName;
 
-    presence.addMember(roomSlug, {
+    await presence.addMember(roomSlug, {
       socketId: socket.id,
       userId: socket.data.user.sub,
       name: displayName,
@@ -54,16 +45,17 @@ export function registerChatHandlers(io: Server, socket: Socket): void {
     });
 
     socket.to(roomSlug).emit('presence:participant-joined', { name: displayName });
-    io.to(roomSlug).emit('presence:members', presence.getMembers(roomSlug));
-    socket.emit('chat:history', histories.get(roomSlug) ?? []);
+    io.to(roomSlug).emit('presence:members', await presence.getMembers(roomSlug));
+    socket.emit('chat:history', await chatHistory.getHistory(roomSlug));
   });
 
   /**
    * Structured in-meeting chat. Validated, rate-limited, enriched with
-   * sender/timestamp server-side, persisted to per-room history, and
-   * broadcast to everyone in the room (sender included, for echo).
+   * sender/timestamp server-side, stamped with a Lamport clock for total
+   * cross-instance ordering, persisted to shared history, and broadcast to
+   * everyone in the room (sender included, for echo).
    */
-  socket.on('chat:message', (payload: { roomSlug?: string; text?: string }) => {
+  socket.on('chat:message', async (payload: { roomSlug?: string; text?: string }) => {
     const roomSlug = String(payload?.roomSlug ?? socket.data.roomSlug ?? '');
     const text = String(payload?.text ?? '').trim();
 
@@ -81,9 +73,11 @@ export function registerChatHandlers(io: Server, socket: Socket): void {
       senderName: socket.data.displayName ?? socket.data.user.name,
       text,
       timestamp: Date.now(),
+      lamport: await chatHistory.nextLamport(roomSlug),
+      nodeId: chatHistory.nodeId,
     };
 
-    pushHistory(msg);
+    await chatHistory.pushMessage(msg);
     io.to(roomSlug).emit('chat:message', msg);
   });
 
